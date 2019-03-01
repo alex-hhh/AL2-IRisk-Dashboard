@@ -20,6 +20,7 @@
 
 (require data-frame
          data-frame/private/spline
+         gui-widget-mixins
          db
          racket/runtime-path
          math/statistics
@@ -311,13 +312,40 @@
   ;; plot container.
   snip)
 
+(define db #f)
 
-;; Fetch data, create plots and add them to the plot container.
-(define (load-plots db container)
-  (define df (fetch-irisk-data db 25 4))
-  (add-all-smoothed-series df 0.25)
+;; Since `load-plots` can be triggered multiple times when settings are
+;; changed, we keep track of which call is the latest one here.
+(define generation 0)
+
+
+;; Fetch data, create plots and add them to the plot container.  Fetch BEFORE
+;; weeks of data, add AFTER weeks of data and use LOAD (0 to 100) as the load
+;; percentage of the current week.
+(define (load-plots db before after load container)
+
+  ;; Save the current generation here.  If at the end of the run, it is still
+  ;; the same, we can install our changes in the plot container.
+  (set! generation (add1 generation))
+  (define saved-generation generation)
+
+  (queue-callback
+   (lambda ()
+     (send container clear)
+     (send container set-background-message "Loading plots...")))
+
+  ;; Because we filter the data, the filtered values will always start at 0,
+  ;; to avoid this, we fetch some EXTRA weeks to seed the filter, these weeks
+  ;; will not be plotted, because an OFFSET is calculated later and all plots
+  ;; will actually discard the first OFFSET entries.
+
+  (define extra (* 3 (exact-round (/ 100 load))))
+  (define df (fetch-irisk-data db (+ extra before) after))
+  (add-all-smoothed-series df (/ load 100))
 
   (define-values (width height) (send container cell-dimensions 9))
+
+  (define offset (max 0 (- (df-row-count df) (+ before after))))
 
   (define all-plot-data
     (list
@@ -339,17 +367,23 @@
       (make-plot df series load-series
                  #:title title
                  #:format-value format-value
+                 #:offset offset
                  #:background color
                  #:width width #:height height)))
 
   ;; NOTE: this function is called in a separate thread.  When the time comes
   ;; to add the plots to the container, do it in the main GUI thread...
-  (queue-callback (lambda () (send container add-multiple-snips plots))))
+  (queue-callback (lambda ()
+                    ;; If our generation is still the latest, install the
+                    ;; plots.
+                    (when (= saved-generation generation)
+                      (send container clear)
+                      (send container add-multiple-snips plots)))))
 
 ;; Called when the plot container is shown.  Open database, load data and
 ;; construct the plots.  Do it in a separate thread, to avoid blocking the
 ;; GUI.
-(define (on-canvas-show canvas)
+(define (on-canvas-show wbefore wafter wload canvas)
   (thread
    (lambda ()
      ;; Read the database file from the ActivityLog2 preferences file -- if
@@ -367,41 +401,117 @@
 
      ;; The connection to the database, note that we open it in read-only
      ;; mode, as we only read from it.
-     (define db
-       (and database-file
-            (sqlite3-connect #:database database-file #:mode 'read-only)))
+     (set! db
+           (and database-file
+                (sqlite3-connect #:database database-file #:mode 'read-only)))
 
-     (if db
-         (load-plots db canvas)
-         (queue-callback
-          (lambda ()
-            (send canvas set-background-message "No Database")))))))
+     (define before (send wbefore get-value/validated))
+     (define after (send wafter get-value/validated))
+     (define load (send wload get-value/validated))
+     (cond ((not (and (number? before) (number? after)))
+            (queue-callback
+             (lambda ()
+               (send canvas set-background-message "Invalid Week Range"))))
+           ((not (number? load))
+            (queue-callback
+             (lambda ()
+               (send canvas set-background-message "Invalid Week Load"))))
+           ((not db)
+            (queue-callback
+             (lambda ()
+               (send canvas set-background-message "No Database"))))
+           (#t
+            (load-plots db before after load canvas))))))
 
-;; This function is invoked when the toplevel is closed.  Save the size of the
-;; frame, so we can re-open it with the same dimensions
-(define (on-toplevel-close frame)
-  (unless (or (send frame is-maximized?) (send frame is-fullscreened?))
-    (let-values (([w h] (send frame get-size)))
-      (put-pref 'irisk-dashboard:frame-dimensions (cons w h))))
-  (put-pref 'irisk-dashboard:frame-maximized (send frame is-maximized?)))
+(define weeks-input-field%
+  (tooltip-mixin
+   (decorate-mixin
+    (lambda (s) (if (equal? "" (string-trim s)) "" (string-append s " weeks")))
+    (validate-mixin
+     string->number number->string
+     (cue-mixin
+      "weeks"
+      text-field%)))))
 
-;; Create the toplevel frame, and the plot container, than call `load-plots`
-;; to load the actual plot data.
+(define percent-input-field%
+  (tooltip-mixin
+   (decorate-mixin
+    (lambda (s) (if (equal? "" (string-trim s)) "" (string-append s " %")))
+    (validate-mixin
+     (lambda (s)
+       (define n (string->number s))
+       (if (and n (>= n 0) (<= n 100)) n #f))
+     number->string
+     (cue-mixin
+      "0 .. 100%"
+      text-field%)))))
+
+;; Create the toplevel frame, and the plot container and other widgets, than
+;; call `load-plots` to load the actual plot data.
 (define (show-irisk-dashboard)
 
   (define dims (get-pref 'irisk-dashboard:frame-dimensions (lambda () (cons 1200 750))))
   (define maximized? (get-pref 'irisk-dashboard:frame-maximized (lambda () #f)))
+
   (define tl (new (class frame% (init) (super-new)
                     ;; Note: the default implementation of on-exit is to call
                     ;; on-close and hide the window.
                     (define/augment (on-close)
+                      (save-parameters)
                       (send this show #f)
-                      (on-toplevel-close this)))
+                      (exit)))
                   [label "AL2 IRisk Dashboard"]
                   [width (car dims)]
                   [height (cdr dims)]))
   (when maximized?
     (send tl maximize maximized?))
+
+  (define before (get-pref 'irisk-dashboard:before (lambda () 5)))
+  (define after (get-pref 'irisk-dashboard:after (lambda () 4)))
+  (define load (get-pref 'irisk-dashboard:load (lambda () 25)))
+
+  (define settings
+    (new horizontal-pane%
+         [parent tl]
+         [stretchable-height #f]
+         [spacing 20]))
+
+  (new message%
+       [parent settings]
+       [label ""]
+       [stretchable-width #t])
+
+  (define wbefore (new weeks-input-field%
+                       [parent settings]
+                       [stretchable-width #f]
+                       [min-width 150]
+                       [label "Past "]
+                       [tooltip "Number of weeks in the past"]
+                       [init-value (~a before)]
+                       [callback (lambda (c e) (refresh-plot))]
+                       [callback-delay 500]))
+  (define wafter (new weeks-input-field%
+                      [parent settings]
+                      [stretchable-width #f]
+                      [min-width 150]
+                      [label "Future "]
+                      [tooltip "Number of weeks to predict in the future"]
+                      [init-value (~a after)]
+                      [callback (lambda (c e) (refresh-plot))]
+                      [callback-delay 500]))
+  (define wload (new percent-input-field%
+                     [parent settings]
+                     [label "Load "]
+                     [tooltip "Load percentage of current week"]
+                     [stretchable-width #f]
+                     [min-width 150]
+                     [init-value (~a load)]
+                     [callback (lambda (c e) (refresh-plot))]
+                     [callback-delay 500]))
+  (define refresh (new button%
+                       [parent settings]
+                       [label "Refresh"]
+                       [callback (lambda (b e) (refresh-plot))]))
 
   ;; This is the plot container which holds all the plots.  Once it is
   ;; displayed in the GUI, its `on-superwindow-show` calls on-canvas-show.
@@ -413,10 +523,31 @@
            (init) (super-new)
            (define/override (on-superwindow-show shown?)
              (when shown?
-               (on-canvas-show this))))
+               (on-canvas-show wbefore wafter wload this))))
          [parent tl]))
 
-  (send canvas set-background-message "Loading plots...")
+  (define (refresh-plot)
+    (define before (send wbefore get-value/validated))
+    (define after (send wafter get-value/validated))
+    (define load (send wload get-value/validated))
+    (when (and db (number? before) (number? after) (number? load))
+      (thread
+       (lambda ()
+         (load-plots db before after load canvas)))))
+
+  (define (save-parameters)
+    (unless (or (send tl is-maximized?) (send tl is-fullscreened?))
+      (let-values (([w h] (send tl get-size)))
+        (put-pref 'irisk-dashboard:frame-dimensions (cons w h))))
+    (put-pref 'irisk-dashboard:frame-maximized (send tl is-maximized?))
+    (define before (send wbefore get-value/validated))
+    (define after (send wafter get-value/validated))
+    (define load (send wload get-value/validated))
+    (when (and (number? before) (number? after) (number? load))
+      (put-pref 'irisk-dashboard:before before)
+      (put-pref 'irisk-dashboard:after after)
+      (put-pref 'irisk-dashboard:load load)))
+
   (send tl show #t))
 
 (module+ main
