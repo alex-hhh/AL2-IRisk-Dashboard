@@ -426,7 +426,7 @@
 (define weeks-input-field%
   (tooltip-mixin
    (decorate-mixin
-    (lambda (s) (if (equal? "" (string-trim s)) "" (string-append s " weeks")))
+    (decorate-with "weeks" #:validate string->number)
     (validate-mixin
      string->number number->string
      (cue-mixin
@@ -436,7 +436,7 @@
 (define percent-input-field%
   (tooltip-mixin
    (decorate-mixin
-    (lambda (s) (if (equal? "" (string-trim s)) "" (string-append s " %")))
+    (decorate-with "%" #:validate string->number)
     (validate-mixin
      (lambda (s)
        (define n (string->number s))
