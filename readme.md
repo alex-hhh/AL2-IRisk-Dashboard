@@ -10,12 +10,14 @@ features from what is described there.
 
 # Building the application
 
-You will need [Racket][racket] installed and also the [data-frame][df] and
-[gui-widget-mixins][gwm] packages, these can be installed using the command:
+You will need [Racket][racket] installed and also the [data-frame][df],
+[gui-widget-mixins][gwm] and [plot-container][pc] packages, these can be
+installed using the command:
 
 ```
 raco pkg install data-frame
 raco pkg install gui-widget-mixins
+rack pkg install plot-container
 ```
 
 You can run the application from DrRacket by opening the "main.rkt" file and
@@ -43,3 +45,4 @@ formats of this icon (or any other one) which can be used on MacOS or Linux.
 [df]: https://pkgs.racket-lang.org/package/data-frame
 [gwm]: https://pkgd.racket-lang.org/pkgn/package/gui-widget-mixins
 [racket]: https://www.racket-lang.org
+[pc]: https://pkgd.racket-lang.org/pkgn/package/plot-container

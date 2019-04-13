@@ -21,14 +21,14 @@
 (require data-frame
          data-frame/private/spline
          gui-widget-mixins
+         plot-container
+         plot-container/hover-util
          db
          racket/runtime-path
          math/statistics
          plot
          "utilities.rkt"
-         "dbutil.rkt"
-         "plot-container.rkt"
-         "plot-util.rkt")
+         "dbutil.rkt")
 
 
 ;;............................................... data source connection ....
@@ -288,10 +288,7 @@
         (define admin (send snip get-admin))
         (define pb (send admin get-editor))
         (define canvas (send pb get-canvas))
-        (let ((ex (box (send event get-x)))
-              (ey (box (send event get-y))))
-          (send pb global-to-local ex ey)
-          (send canvas set-hover-pict badge (unbox ex) (unbox ey)))))
+        (send canvas set-hover-pict-at-mouse-event badge event)))
 
     ;; NOTE: we need to call both set-hover-pict and set-overlay-renderers
     ;; even if we didn't have any information to display, as calling these
@@ -331,7 +328,7 @@
 
   (queue-callback
    (lambda ()
-     (send container clear)
+     (send container clear-all)
      (send container set-background-message "Loading plots...")))
 
   ;; Because we filter the data, the filtered values will always start at 0,
@@ -377,8 +374,7 @@
                     ;; If our generation is still the latest, install the
                     ;; plots.
                     (when (= saved-generation generation)
-                      (send container clear)
-                      (send container add-multiple-snips plots)))))
+                      (send/apply container set-plot-snips plots)))))
 
 ;; Called when the plot container is shown.  Open database, load data and
 ;; construct the plots.  Do it in a separate thread, to avoid blocking the
@@ -520,11 +516,12 @@
   ;; for the first time.
   (define canvas
     (new (class plot-container%
-           (init) (super-new)
+           (init)
+           (super-new)
            (define/override (on-superwindow-show shown?)
              (when shown?
                (on-canvas-show wbefore wafter wload this))))
-         [parent tl]))
+         [parent tl] [columns 3] [spacing 5]))
 
   (define (refresh-plot)
     (define before (send wbefore get-value/validated))
